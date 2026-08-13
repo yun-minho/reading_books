@@ -236,7 +236,7 @@ B | D
 
 例えば、`Bugs.reported_by` カラムが `Accounts.account_id` を参照している場合、本来なら以下のようにFK制約を定義するが、
 
-``
+```
 FOREIGN KEY (reported_by)
   REFERENCES Accounts(account_id)
 ```
