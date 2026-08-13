@@ -296,12 +296,14 @@ RDBを利用しているのであれば、テーブル間の参照整合性は�
 通常のテーブルとEAVを採用したテーブルの違いは以下である。
 
 - products(通常のテーブル管理)
+
 | product_id | name | cpu | memory |
 |------------|------|-----|--------|
 | 1          | PC A | i7  | 16GB   |
 | 2          | PC B | i5  | 8GB    |
 
 - product_attributes(EAVパターンでの管理)
+
 | product_id | attribute | value |
 |------------|-----------|-------|
 | 1          | cpu       | i7    |
@@ -336,6 +338,7 @@ EAVを使う前に通常のリレーショナルなテーブルとしてモデ�
 例えば、
 
 - products
+
 | product_id | name | type |
 |------------|------|------|
 | 1          | PC A | PC   |
@@ -344,11 +347,13 @@ EAVを使う前に通常のリレーショナルなテーブルとしてモデ�
 に加えて、
 
 - pcs
+
 | product_id | cpu | memory |
 |------------|-----|--------|
 | 1          | i7  | 16GB   |
 
 - smartphones
+
 | product_id | screen_size | camera |
 |------------|-------------|--------|
 | 2          | 6.5         | 50MP   |
