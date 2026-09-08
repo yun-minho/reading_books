@@ -821,7 +821,6 @@ INSERT INTO Bugs (hours) VALUES(-1)
 ```
 この場合は、間違って SUM(), AVG() などの集計計算を行い、望ましくない結果を取得してしまう恐れがある。
 
-
 #### このパターンが適切な場合は？
 NULL自体を使用することがアンチパターンなのではない。SQLにおけるNULLの動作を正しく理解せずに使用することがアンチパターンである。例えば、「値が存在しない」・「値が不明である」といった状態を表現するためにNULLを使用することには合理的な理由がある。
 
@@ -843,6 +842,130 @@ NULLを特別な値として扱い、その性質を理解したうえで利用�
 
 #### 🤔 個人的なメモ
 NULLは存在しないという意味ではなく、まだ分からないという未知の値としてSQLでは考えるべきだと思った
+
+### 第15章　アンビギュアスグループ(曖昧なグループ)
+
+#### もともと達成したかった目標
+GROUP BYを使用してグループごとにMAX、MIN、AVGなどの集計関数を使用すると同時に、その集計結果に対応する行の他の属性も取得したい。
+
+#### アンチパターン
+GROUP BYによって複数の行を1つのグループにまとめながら、グループごとに1つの値に決めることができないカラムをSELECTするパターン。
+
+例) 製品ごとの最新のバグ報告日とその日に報告されたバグのIDを同時に取得したい場合
+```
+SELECT product_id, MAX(date_reported) AS latest, bug_id
+FROM Bugs JOIN BugsProducts USING (bug_id)
+GROUP BY product_id;
+```
+
+#### なぜ問題なのか
+単一値の規則に違反するため。
+- 上記のクエリでは、SELECTするすべてのカラムについて、1つの行グループに対して1つの値を決める必要がある
+- しかし、1つの製品には複数のバグが存在する可能性があるため、product_idごとにbug_idの値が1つに決まるとは限らない
+- そのため、MAX(date_reported)によって最新の日付を取得できても、その日付に対応するbug_idをSELECTすることはできない
+
+#### このパターンが適切な場合は？
+GROUP BY で指定していないカラムであっても、GROUP BY で指定したカラムの値によってそのカラムの値が一意に決まる場合。
+例えば、外部キーが別テーブルの主キーを参照している場合、外部キーの値が決まれば、参照先のテーブルの属性値も一意に決まる。
+
+account_id | account_name |
+-----|-----
+1    | Alice   
+2    | Bob
+
+で、以下のクエリを考える
+
+```
+SELECT b.reported_by, a.account_name
+FROM Bugs b JOIN Accounts a ON (b.reported_by = a.account_id)
+GROUP BY b.reported_by;
+```
+
+reported_by は Accounts.account_id というPKを参照しているFKのため、上のSQLで a.account_name は一意になり、クエリ結果に曖昧さがなくなる。
+
+ただ、このようなクエリはSQL標準では単一値の規則に従わないため、多くのデータベースではエラーになる。MySQLやSQLiteでは許容される場合があるが、データベース製品への依存が発生するため注意が必要である。
+
+#### 解決策
+以下のデータが存在すると仮定する。
+
+product_id | bug_id | date_reported
+-----|-----|-----
+1    | 101   | 1/10
+1    | 102   | 2/15
+1    | 103   | 3/01
+2    | 201   | 1/20
+2    | 202   | 2/10
+
+1. 関数従属性のあるカラムだけをクエリする
+- 曖昧なカラムまで取得しようとせずに、必要な集計結果だけを取得する。
+```
+SELECT product_id, MAX(date_reported) AS latest
+FROM Bugs JOIN BugsProducts USING (bug_id)
+GROUP BY product_id;
+```
+
+2. ウィンドウ関数を使用する
+元の行を維持したまま、製品ごとに報告日の降順で並べ、各行に順位を付ける。その後、最も高い順位（rownum = 1）の行だけを取得する。
+
+```
+SELECT t.product_id, t.date_reported, t.bug_id
+FROM (
+  SELECT bp.product_id, b.date_reported, b.bug_id,
+    ROW_NUMBER() OVER (PARTITION BY bp.product_id
+      ORDER BY b.date_reported DESC) AS rownum
+  FROM Bugs b JOIN BugsProducts bp USING (bug_id)
+) AS t
+WHERE t.rownum = 1;
+```
+
+3. 相関サブクエリを使用する
+現在の行をb1とすると、同じ製品の中に自分より新しいバグb2が存在するかどうかを確認する。
+そのようなバグが存在しない場合、つまり自分より新しいバグがない行だけを取得する。
+
+```
+SELECT bp1.product_id, b1.date_reported AS latest, b1.bug_id
+FROM Bugs b1 JOIN BugsProducts bp1 USING (bug_id)
+WHERE NOT EXISTS
+(SELECT * FROM Bugs b2 JOIN BugsProducts bp2 USING (bug_id)
+  WHERE bp1.product_id = bp2.product_id
+    AND b1.date_reported < b2.date_reported);
+```
+
+4. 導出テーブルを使用する
+まずMAX()を使用して製品ごとの最新の日付を求め、それを導出テーブルとして扱う。
+その後、その結果と元のテーブルをJOINし、最新の日付に対応する元の行を取得する。
+
+```
+SELECT m.product_id, m.latest, b1.bug_id
+FROM Bugs b1 JOIN BugsProducts bp1 USING (bug_id)
+  JOIN (SELECT bp2.product_id, MAX(b2.date_reported) AS latest
+    FROM Bugs b2 JOIN BugsProducts bp2 USING (bug_id)
+    GROUP BY bp2.product_id) m
+  ON (bp1.product_id = m.product_id AND b1.date_reported = m.latest);
+```
+
+5. JOINを使用する
+現在のバグよりも新しいバグをLEFT OUTER JOINによって探し、そのようなバグが結合されなかった現在の行だけを残す。
+
+```
+SELECT bp1.product_id, b1.date_reported AS latest, b1.bug_id
+FROM Bugs b1 JOIN BugsProducts bp1 ON (b1.bug_id = bp1.bug_id)
+LEFT OUTER JOIN
+  (Bugs AS b2 JOIN BugsProducts AS bp2 ON (b2.bug_id = bp2.bug_id))
+  ON (bp1.product_id = bp2.product_id
+    AND (b1.date_reported < b2.date_reported
+    OR b1.date_reported = b2.date_reported AND b1.bug_id < b2.bug_id))
+WHERE b2.bug_id IS NULL;
+```
+
+6. 追加のカラムにも集計関数を使用する
+設計上で最も大きいbug_idが常に最新のバグ報告日に対応することが保証されている場合は、bug_idにもMAX()を使用して取得できる。
+
+```
+SELECT product_id, MAX(date_reported) AS latest, MAX(bug_id) AS latest_bug_id
+FROM Bugs JOIN BugsProducts USING (bug_id)
+GROUP BY product_id;
+```
 
 ## 全体的な感想
 ...
